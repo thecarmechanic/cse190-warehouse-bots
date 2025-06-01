@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 from collections import deque
+import csv
 
 # --- configs ---
 n_agents = 2
@@ -19,22 +20,20 @@ epsilon = 1.0
 epsilon_decay = 0.9995
 epsilon_min = 0.05
 num_episodes = 3000
-max_steps = 100
+max_steps = 75
 batch_size = 64
 target_update_freq = 10
 replay_capacity = 10000
-max_reward = 20
+max_reward = 50
 progress_check = 100    # how often we want to print episode progress in training loop
 
 frames = []
 
 # --- layout ---
 layout = """
-......g.....
-x....x.....x
-x.....x....x
-............
-.x.x.x.x.x.x
+..x..
+.g.g.
+.x..x
 """
 
 # --- environment ---
@@ -84,7 +83,10 @@ class Agent:
     
     def select_action(self, obs, eps):
         if random.random() < eps:
-            return env.action_space[self.id].sample()
+            actions = env.action_space[self.id]
+            chosen_action = actions.sample()
+            # print(actions, chosen_action)
+            return chosen_action
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
         with torch.no_grad():
             q_values = self.policy_net(obs_tensor)
@@ -95,7 +97,7 @@ class Agent:
     
     def train_step(self):
         if len(self.memory) < batch_size:
-            return
+            return None
         
         batch = random.sample(self.memory, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
@@ -117,11 +119,16 @@ class Agent:
         loss.backward()
         self.optimizer.step()
 
+        return loss.item()
+
 # --- initialize agents ---
 agents = [Agent(i, shared_policy_net, shared_target_net, shared_optimizer, shared_memory) for i in range(n_agents)]
 
+episode_stats = []  # before the loop
+
 # --- training loop ---
 for episode in range(num_episodes):
+    episode_losses = []
     obs, _ = env.reset()
     total_reward = [0] * n_agents
     done = [False] * n_agents
@@ -133,29 +140,30 @@ for episode in range(num_episodes):
     for step in range(max_steps):
         actions = [agent.select_action(obs[i], epsilon) for i, agent in enumerate(agents)]
         next_obs, rewards, terminated, truncated, info = env.step(actions)
-        print(info)
+        # print(info)
 
         terminated = [terminated] * n_agents if isinstance(terminated, bool) else terminated
         truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
         done = [t or tr for t, tr in zip(terminated, truncated)]
 
         for i in range(n_agents):
+            agents[i].store(obs[i], actions[i], rewards[i], next_obs[i], done[i])
+            loss = agents[i].train_step()
+            if loss is not None:
+                episode_losses.append(loss)
+            total_reward[i] += rewards[i]
             # --- custom rewards ---
-            if (i, tuple(next_obs[i].flatten())) in visited_states:
-                rewards[i] -= 0.1
-            else:
-                visited_states.add((i, tuple(next_obs[i].flatten())))
+            # if (i, tuple(next_obs[i].flatten())) in visited_states:
+                # rewards[i] -= 0.1
+            # else:
+                #visited_states.add((i, tuple(next_obs[i].flatten())))
             # print the q values for all the actions
             
-            if actions[i] == 0:
-                rewards[i] -= 0.1
+            # if actions[i] == 0:
+                # rewards[i] -= 0.1
             
-            if rewards[i] == 1:
-                rewards[i] += 1
-
-            agents[i].store(obs[i], actions[i], rewards[i], next_obs[i], done[i])
-            agents[i].train_step()
-            total_reward[i] += rewards[i]
+            # if rewards[i] == 1:
+                # rewards[i] += 1
         
         obs = next_obs
         complete_reward = 0
@@ -164,6 +172,10 @@ for episode in range(num_episodes):
 
         if all(done) or complete_reward >= max_reward:
             break
+    
+    avg_loss = np.mean(episode_losses) if episode_losses else 0.0
+    total_reward_sum = sum(total_reward)
+    avg_reward_per_agent = total_reward_sum / n_agents
     
     # --- epsilon decay ---
     epsilon = max(epsilon_min, epsilon * epsilon_decay)
@@ -174,9 +186,27 @@ for episode in range(num_episodes):
     
     # --- print progress? ---
     if (episode + 1) % progress_check == 0:
-        print(f"Episode {episode+1}, epsilon={epsilon:.3f}, reward={total_reward}")
+        print(f"Episode {episode+1}, epsilon={epsilon:.3f}, "
+              f"total_reward={total_reward_sum}, avg_reward={avg_reward_per_agent:.2f}, "
+              f"avg_loss={avg_loss:.4f}")
+    
+    episode_stats.append({
+        "episode": episode + 1,
+        "epsilon": epsilon,
+        "total_reward": total_reward_sum,
+        "avg_reward": avg_reward_per_agent,
+        "avg_loss": avg_loss,
+    })
 
 print("\n✅ DQN Training Complete!")
+
+torch.save(shared_policy_net.state_dict(), "shared_dqn_model.pth")
+print("✅ Model saved to 'shared_dqn_model.pth'")
+
+with open("episode_stats.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
+    writer.writeheader()
+    writer.writerows(episode_stats)
 
 # --- evaluation ---
 obs, _ = env.reset()
@@ -194,7 +224,7 @@ for step in range(max_steps):
         print(f"Agent {i} action: {action}")
 
     obs, rewards, terminated, truncated, infos = env.step(actions)
-    print(info, "hello?")
+    # print(info, "hello?")
     terminated = [terminated] * n_agents if isinstance(terminated, bool) else terminated
     truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
     done = [t or tr for t, tr in zip(terminated, truncated)]
