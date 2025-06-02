@@ -150,6 +150,7 @@ for episode in range(num_episodes):
         truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
         done = [t or tr for t, tr in zip(terminated, truncated)]
 
+        agent_steps = [] # track the stepd each agent takes
         for i in range(n_agents):
             agents[i].store(obs[i], actions[i], rewards[i], next_obs[i], done[i])
             loss = agents[i].train_step()
@@ -168,6 +169,8 @@ for episode in range(num_episodes):
             
             # if rewards[i] == 1:
                 # rewards[i] += 1
+            if done[i]:
+                agent_steps.append(step)
         
         obs = next_obs
         complete_reward = 0
@@ -180,6 +183,7 @@ for episode in range(num_episodes):
     avg_loss = np.mean(episode_losses) if episode_losses else 0.0
     total_reward_sum = sum(total_reward)
     avg_reward_per_agent = total_reward_sum / n_agents
+    
     
     # --- epsilon decay ---
     epsilon = max(epsilon_min, epsilon * epsilon_decay)
@@ -200,6 +204,7 @@ for episode in range(num_episodes):
         "total_reward": total_reward_sum,
         "avg_reward": avg_reward_per_agent,
         "avg_loss": avg_loss,
+        "steps": agent_steps
     })
 
 print("\n✅ DQN Training Complete!")
