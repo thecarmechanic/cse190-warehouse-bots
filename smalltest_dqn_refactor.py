@@ -64,10 +64,14 @@ class DQN(nn.Module):
     
     def forward(self, x):
         return self.net(x)
+
+# Check if GPU is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
     
 # --- initialized the shared components (target net, policy net, optimizer, memory) ---
-shared_policy_net = DQN(obs_dim, n_actions)
-shared_target_net = DQN(obs_dim, n_actions)
+shared_policy_net = DQN(obs_dim, n_actions).to(device)
+shared_target_net = DQN(obs_dim, n_actions).to(device)
 shared_target_net.load_state_dict(shared_policy_net.state_dict())
 shared_optimizer = optim.Adam(shared_policy_net.parameters(), lr=alpha)
 shared_memory = deque(maxlen=replay_capacity)
@@ -87,7 +91,7 @@ class Agent:
             chosen_action = actions.sample()
             # print(actions, chosen_action)
             return chosen_action
-        obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+        obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
         with torch.no_grad():
             q_values = self.policy_net(obs_tensor)
         return q_values.argmax().item()
@@ -102,11 +106,11 @@ class Agent:
         batch = random.sample(self.memory, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.FloatTensor(np.array(states))
-        actions = torch.LongTensor(np.array(actions)).unsqueeze(1)
-        rewards = torch.FloatTensor(np.array(rewards))
-        next_states = torch.FloatTensor(np.array(next_states))
-        dones = torch.FloatTensor(np.array(dones))
+        states = torch.FloatTensor(np.array(states)).to(device)
+        actions = torch.LongTensor(np.array(actions)).unsqueeze(1).to(device)
+        rewards = torch.FloatTensor(np.array(rewards)).to(device)
+        next_states = torch.FloatTensor(np.array(next_states)).to(device)
+        dones = torch.FloatTensor(np.array(dones)).to(device)
 
         q_values = self.policy_net(states).gather(1, actions).squeeze()
         with torch.no_grad():
