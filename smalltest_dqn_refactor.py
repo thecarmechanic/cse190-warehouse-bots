@@ -91,7 +91,7 @@ class Agent:
             chosen_action = actions.sample()
             # print(actions, chosen_action)
             return chosen_action
-        obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
+        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
         with torch.no_grad():
             q_values = self.policy_net(obs_tensor)
         return q_values.argmax().item()
@@ -106,11 +106,11 @@ class Agent:
         batch = random.sample(self.memory, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.FloatTensor(np.array(states)).to(device)
-        actions = torch.LongTensor(np.array(actions)).unsqueeze(1).to(device)
-        rewards = torch.FloatTensor(np.array(rewards)).to(device)
-        next_states = torch.FloatTensor(np.array(next_states)).to(device)
-        dones = torch.FloatTensor(np.array(dones)).to(device)
+        states = torch.tensor(states, dtype=torch.float32, device=device)
+        actions = torch.tensor(actions, dtype=torch.long, device=device).unsqueeze(1)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+        next_states = torch.tensor(next_states, dtype=torch.float32, device=device)
+        dones = torch.tensor(dones, dtype=torch.float32, device=device)
 
         q_values = self.policy_net(states).gather(1, actions).squeeze()
         with torch.no_grad():
@@ -140,7 +140,8 @@ for episode in range(num_episodes):
     
     for i in range(n_agents):
         visited_states.add((i, tuple(obs[i].flatten())))
-
+    
+    agent_steps = [max_steps] * n_agents # track the steps each agent takes
     for step in range(max_steps):
         actions = [agent.select_action(obs[i], epsilon) for i, agent in enumerate(agents)]
         next_obs, rewards, terminated, truncated, info = env.step(actions)
@@ -150,7 +151,6 @@ for episode in range(num_episodes):
         truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
         done = [t or tr for t, tr in zip(terminated, truncated)]
 
-        agent_steps = [] # track the stepd each agent takes
         for i in range(n_agents):
             agents[i].store(obs[i], actions[i], rewards[i], next_obs[i], done[i])
             loss = agents[i].train_step()
@@ -170,7 +170,7 @@ for episode in range(num_episodes):
             # if rewards[i] == 1:
                 # rewards[i] += 1
             if done[i]:
-                agent_steps.append(step)
+                agent_steps[i] = step
         
         obs = next_obs
         complete_reward = 0
@@ -189,7 +189,7 @@ for episode in range(num_episodes):
     epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
     # --- update target net? ---
-    if (episode + 1) & target_update_freq == 0:
+    if (episode + 1) % target_update_freq == 0:
         shared_target_net.load_state_dict(shared_policy_net.state_dict())
     
     # --- print progress? ---
@@ -225,9 +225,9 @@ for step in range(max_steps):
     actions = []
     for i in range(n_agents):
         flat_obs = np.array(obs[i]).flatten()
-        obs_tensor = torch.FloatTensor(flat_obs).unsqueeze(0)
+        obs_tensor = torch.tensor(flat_obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
-            q_vals = shared_policy_net(obs_tensor)
+            q_vals = shared_policy_net(obs_tensor).detach().cpu().numpy()
         action = int(q_vals.argmax())
         actions.append(action)
         print(f"Agent {i} action: {action}")
