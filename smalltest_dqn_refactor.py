@@ -19,9 +19,15 @@ gamma = 0.95
 epsilon = 1.0
 epsilon_decay = 0.9995
 epsilon_min = 0.05
+<<<<<<< HEAD
 num_episodes = 3000
 max_steps = 75
 batch_size = 128
+=======
+num_episodes = 4000
+max_steps = 175
+batch_size = 64
+>>>>>>> c3d92382e857d8fff4c992bea1f86747f7374c61
 target_update_freq = 10
 replay_capacity = 10000
 max_reward = 50
@@ -31,13 +37,22 @@ frames = []
 
 # --- layout ---
 layout = """
-..x..
-.g.g.
-.x..x
+..g..
+.x.x.
+.x.x.
+.x.x.
+"""
+
+medium_layout = """
+..g...g.....
+x....x.....x
+x..........x
+x...........
+.x.x.x.x.x.x
 """
 
 # --- environment ---
-env = gym.make("rware:rware-tiny-2ag-v2", layout=layout)
+env = gym.make("rware:rware-tiny-2ag-v2", layout=medium_layout)
 obs, info = env.reset()
 print(info)
 
@@ -55,11 +70,11 @@ class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(DQN, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 64), 
+            nn.Linear(input_dim, 128), 
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(128, 128),
             nn.ReLU(), 
-            nn.Linear(64, output_dim)
+            nn.Linear(128, output_dim)
         )
     
     def forward(self, x):
@@ -198,8 +213,8 @@ for episode in range(num_episodes):
 
 print("\n✅ DQN Training Complete!")
 
-torch.save(shared_policy_net.state_dict(), "shared_dqn_model.pth")
-print("✅ Model saved to 'shared_dqn_model.pth'")
+torch.save(shared_policy_net.state_dict(), "shared_dqn_medium_model.pth")
+print("✅ Model saved to 'shared_dqn_model_medium.pth'")
 
 with open("episode_stats.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
@@ -209,6 +224,7 @@ with open("episode_stats.csv", "w", newline="") as f:
 # --- evaluation ---
 obs, _ = env.reset()
 done = [False] * n_agents
+total_reward = 0
 
 for step in range(max_steps):
     actions = []
@@ -222,6 +238,8 @@ for step in range(max_steps):
         print(f"Agent {i} action: {action}")
 
     obs, rewards, terminated, truncated, infos = env.step(actions)
+    for r in rewards:
+        total_reward += r
     # print(info, "hello?")
     terminated = [terminated] * n_agents if isinstance(terminated, bool) else terminated
     truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
@@ -243,9 +261,10 @@ for step in range(max_steps):
 
     if all(done):
         break
+    print(f"TOTAL REWARD: {total_reward}")
 
 # --- save GIF ---
-imageio.mimsave("rware_dqn_eval.gif", frames, fps=10)
+imageio.mimsave("rware_dqn_eval_medium.gif", frames, fps=10)
 print("🎥 Saved rware_dqn_eval.gif")
 
 input("🏁 Press Enter to exit...")
