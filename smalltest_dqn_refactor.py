@@ -21,7 +21,7 @@ epsilon_decay = 0.9995
 epsilon_min = 0.05
 num_episodes = 3000
 max_steps = 75
-batch_size = 64
+batch_size = 128
 target_update_freq = 10
 replay_capacity = 10000
 max_reward = 50
@@ -91,7 +91,7 @@ class Agent:
             chosen_action = actions.sample()
             # print(actions, chosen_action)
             return chosen_action
-        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
+        obs_tensor = torch.tensor(np.array(obs), dtype=torch.float32, device=device)
         with torch.no_grad():
             q_values = self.policy_net(obs_tensor)
         return q_values.argmax().item()
@@ -106,11 +106,11 @@ class Agent:
         batch = random.sample(self.memory, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.tensor(states, dtype=torch.float32, device=device)
-        actions = torch.tensor(actions, dtype=torch.long, device=device).unsqueeze(1)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=device)
-        dones = torch.tensor(dones, dtype=torch.float32, device=device)
+        states = torch.tensor(np.array(states), dtype=torch.float32, device=device)
+        actions = torch.tensor(np.array(actions), dtype=torch.long, device=device).unsqueeze(1)
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32, device=device)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32, device=device)
+        dones = torch.tensor(np.array(dones), dtype=torch.float32, device=device)
 
         q_values = self.policy_net(states).gather(1, actions).squeeze()
         with torch.no_grad():
@@ -157,18 +157,7 @@ for episode in range(num_episodes):
             if loss is not None:
                 episode_losses.append(loss)
             total_reward[i] += rewards[i]
-            # --- custom rewards ---
-            # if (i, tuple(next_obs[i].flatten())) in visited_states:
-                # rewards[i] -= 0.1
-            # else:
-                #visited_states.add((i, tuple(next_obs[i].flatten())))
-            # print the q values for all the actions
             
-            # if actions[i] == 0:
-                # rewards[i] -= 0.1
-            
-            # if rewards[i] == 1:
-                # rewards[i] += 1
             if done[i]:
                 agent_steps[i] = step
         
@@ -225,7 +214,7 @@ for step in range(max_steps):
     actions = []
     for i in range(n_agents):
         flat_obs = np.array(obs[i]).flatten()
-        obs_tensor = torch.tensor(flat_obs, dtype=torch.float32, device=device).unsqueeze(0)
+        obs_tensor = torch.tensor(np.array(flat_obs), dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             q_vals = shared_policy_net(obs_tensor).detach().cpu().numpy()
         action = int(q_vals.argmax())
