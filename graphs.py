@@ -3,9 +3,12 @@ import matplotlib.pyplot as plt
 
 # Load the CSV
 df = pd.read_csv("episode_stats.csv")  # replace with your actual filename
+print(df['steps'])
 
 # Create the plot
 fig, ax1 = plt.subplots()
+fig.set_figwidth = 12
+
 
 # Plot total_reward on the primary y-axis
 color = 'tab:blue'
@@ -24,4 +27,12 @@ ax2.tick_params(axis='y', labelcolor=color)
 # Add title and show
 plt.title('Episode vs Total Reward and Avg Loss')
 fig.tight_layout()
+plt.show()
+
+# Plot the steps of each agent
+for i in range(len(df['steps'][0])):
+    plt.plot(df['episode'], df['steps'].apply(lambda x: x[i]), label=f"agent {i}")
+
+plt.title('Agent Steps Over Episode')
+plt.legend()
 plt.show()
