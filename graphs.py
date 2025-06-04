@@ -29,10 +29,10 @@ plt.title('Episode vs Total Reward and Avg Loss')
 fig.tight_layout()
 plt.show()
 
-# Plot the steps of each agent
-for i in range(len(df['steps'][0])):
-    plt.plot(df['episode'], df['steps'].apply(lambda x: x[i]), label=f"agent {i}")
+# # Plot the steps of each agent
+# for i in range(len(df['steps'][0])):
+#     plt.plot(df['episode'], df['steps'].apply(lambda x: x[i]), label=f"agent {i}")
 
-plt.title('Agent Steps Over Episode')
-plt.legend()
-plt.show()
+# plt.title('Agent Steps Over Episode')
+# plt.legend()
+# plt.show()

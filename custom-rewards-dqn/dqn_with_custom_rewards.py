@@ -30,7 +30,7 @@ progress_check = 100    # how often we want to print episode progress in trainin
 frames = []
 
 # --- layout ---
-layout = """
+small_layout = """
 ..g..
 .x.x.
 .x.x.
@@ -45,8 +45,16 @@ x...........
 .x.x.x.x.x.x
 """
 
+large_layout = """
+..x.g....g..x
+.xx.xx..x...x
+.xx.xx......x
+.xx.xx..x...x
+.xx.xx..x...x
+"""
+
 # --- environment ---
-env = gym.make("rware:rware-tiny-2ag-v2", layout=layout)
+env = gym.make("rware:rware-tiny-2ag-v2", layout=small_layout)
 obs, info = env.reset()
 print(info)
 
@@ -64,11 +72,11 @@ class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(DQN, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 128), 
+            nn.Linear(input_dim, 64), 
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(64, 64),
             nn.ReLU(), 
-            nn.Linear(128, output_dim)
+            nn.Linear(64, output_dim)
         )
     
     def forward(self, x):
@@ -134,6 +142,12 @@ class Agent:
 
         return loss.item()
 
+# --- helper functions ---
+# euclidean heuristic - returns distance to closest target
+def euclidean(pos, targets):
+    distances = np.linalg.norm(targets - pos, axis=1)
+    return np.min(distances)
+
 # --- initialize agents ---
 agents = [Agent(i, shared_policy_net, shared_target_net, shared_optimizer, shared_memory) for i in range(n_agents)]
 
@@ -145,31 +159,78 @@ for episode in range(num_episodes):
     obs, _ = env.reset()
     total_reward = [0] * n_agents
     done = [False] * n_agents
-    visited_states = set()
+    visited_states = [set() for _ in range(n_agents)] # save visited states for each agent to access by index
     
     for i in range(n_agents):
-        visited_states.add((i, tuple(obs[i].flatten())))
+        visited_states[i].add(tuple(obs[i]))
     
-    agent_steps = [max_steps] * n_agents # track the steps each agent takes
     for step in range(max_steps):
         actions = [agent.select_action(obs[i], epsilon) for i, agent in enumerate(agents)]
         next_obs, rewards, terminated, truncated, info = env.step(actions)
-        # print(info)
 
         terminated = [terminated] * n_agents if isinstance(terminated, bool) else terminated
         truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
         done = [t or tr for t, tr in zip(terminated, truncated)]
+        raw_reward = rewards[i]
 
         for i in range(n_agents):
+            # --- custom reward shaping ---
+            shaped_reward = raw_reward
+            # if any(tuple(next_obs[i]) in ag_states for ag_states in visited_states.values()): # penalize exploring the state already explored by both agents
+            #     # next_obs[i].flatten() in visited_states[i]: # penalize exploring the state already explored by the same agent
+            #     shaped_reward -= 0.1 
+            # print the q values for all the actions
+
+            # reward function 1:
+            # if all(obs[i] == next_obs[i]): # penalize for taking invalid actions -- no state change
+            #     shaped_reward -= 0.1
+            
+            # if raw_reward == 1:
+            #     shaped_reward += 1
+            
+            # reward function 2:
+            # incentivize explorations & penalize revisiting the same state
+            state = tuple(obs[i])
+            if raw_reward == 0:
+                if state in visited_states[i]:
+                    shaped_reward -= 0.05 # light penalty
+                else:
+                    visited_states[i].add(state)
+                    # shaped_reward += 0.05
+            
+            # penalize for taking invalid actions -- no state change
+            if all(obs[i] == next_obs[i]):
+                shaped_reward -= 0.1
+            
+            # # punish no-op
+            # if actions[i] == 0:
+            #     shaped_reward -= 0.05
+            
+            # bonus to successful delivery
+            if raw_reward == 1:
+                shaped_reward += 1
+            
+            # reward function 3: adds on to reward 2 -- not working very well unfort
+            # euclidean heuristic to incentivize carrying a shelf to a goal state
+            curr_loc = obs[i][:2]
+            next_loc = next_obs[i][:2]
+            goals = np.array(env.unwrapped.goals)
+
+            if (obs[i][2] > 0.5) and euclidean(curr_loc, goals) > euclidean(next_loc, goals):
+                shaped_reward += 0.05
+
+            # incentivize successful shelf pickup -- idk why this isn't helping
+            # if (obs[i][2] < 0.5) and (next_obs[i][2] > 0.5):
+            #     shaped_reward += 0.1
+            
+
+            # --- save and train ---
             agents[i].store(obs[i], actions[i], rewards[i], next_obs[i], done[i])
             loss = agents[i].train_step()
             if loss is not None:
                 episode_losses.append(loss)
             total_reward[i] += rewards[i]
             
-            if done[i]:
-                agent_steps[i] = step
-        
         obs = next_obs
         complete_reward = 0
         for r in total_reward:
@@ -202,15 +263,14 @@ for episode in range(num_episodes):
         "total_reward": total_reward_sum,
         "avg_reward": avg_reward_per_agent,
         "avg_loss": avg_loss,
-        "steps": agent_steps
     })
 
 print("\n✅ DQN Training Complete!")
 
-torch.save(shared_policy_net.state_dict(), "shared_dqn_medium_model.pth")
-print("✅ Model saved to 'shared_dqn_model_medium.pth'")
+torch.save(shared_policy_net.state_dict(), "shared_rewards_dqn_model.pth")
+print("✅ Model saved to 'shared_dqn_rewards_model.pth'")
 
-with open("episode_stats.csv", "w", newline="") as f:
+with open("./reward3_episode_stats.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
     writer.writeheader()
     writer.writerows(episode_stats)
@@ -218,26 +278,33 @@ with open("episode_stats.csv", "w", newline="") as f:
 # --- evaluation ---
 obs, _ = env.reset()
 done = [False] * n_agents
+rewards_log = []
 total_reward = 0
 
 for step in range(max_steps):
     actions = []
     for i in range(n_agents):
         flat_obs = np.array(obs[i]).flatten()
-        obs_tensor = torch.tensor(np.array(flat_obs), dtype=torch.float32, device=device).unsqueeze(0)
+        obs_tensor = torch.tensor(flat_obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             q_vals = shared_policy_net(obs_tensor).detach().cpu().numpy()
         action = int(q_vals.argmax())
         actions.append(action)
         print(f"Agent {i} action: {action}")
 
-    obs, rewards, terminated, truncated, infos = env.step(actions)
-    for r in rewards:
-        total_reward += r
+    next_obs, rewards, terminated, truncated, infos = env.step(actions)
     # print(info, "hello?")
     terminated = [terminated] * n_agents if isinstance(terminated, bool) else terminated
     truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
     done = [t or tr for t, tr in zip(terminated, truncated)]
+    for r in rewards:
+        total_reward += r
+    rewards_log.append({"step":step + 1, "total reward": total_reward})
+
+    with open("./reward3_eval_stats.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rewards_log[0].keys())
+        writer.writeheader()
+        writer.writerows(rewards_log)
 
     env.render()
     if hasattr(env.unwrapped, "renderer") and hasattr(env.unwrapped.renderer, "window"):
@@ -256,10 +323,11 @@ for step in range(max_steps):
     if all(done):
         break
     print(f"TOTAL REWARD: {total_reward}")
+    obs = next_obs
 
 # --- save GIF ---
-imageio.mimsave("rware_dqn_eval.gif", frames, fps=10)
-print("🎥 Saved rware_dqn_eval.gif")
+imageio.mimsave("small_rware_dqn_reward3_eval.gif", frames, fps=10)
+print("🎥 Saved small_rware_dqn_reward3_eval.gif")
 
 input("🏁 Press Enter to exit...")
 env.close()
