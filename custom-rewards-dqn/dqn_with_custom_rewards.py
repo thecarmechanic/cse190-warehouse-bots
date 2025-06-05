@@ -19,8 +19,8 @@ gamma = 0.95
 epsilon = 1.0
 epsilon_decay = 0.9995
 epsilon_min = 0.05
-num_episodes = 4000
-max_steps = 175
+num_episodes = 6000 # small = 3000
+max_steps = 350 # small = 175
 batch_size = 64
 target_update_freq = 10
 replay_capacity = 10000
@@ -54,7 +54,7 @@ large_layout = """
 """
 
 # --- environment ---
-env = gym.make("rware:rware-tiny-2ag-v2", layout=small_layout)
+env = gym.make("rware:rware-tiny-2ag-v2", layout=medium_layout)
 obs, info = env.reset()
 print(info)
 
@@ -158,6 +158,7 @@ for episode in range(num_episodes):
     episode_losses = []
     obs, _ = env.reset()
     total_reward = [0] * n_agents
+    total_shaped_reward = [0] * n_agents
     done = [False] * n_agents
     visited_states = [set() for _ in range(n_agents)] # save visited states for each agent to access by index
     
@@ -171,10 +172,10 @@ for episode in range(num_episodes):
         terminated = [terminated] * n_agents if isinstance(terminated, bool) else terminated
         truncated = [truncated] * n_agents if isinstance(truncated, bool) else truncated
         done = [t or tr for t, tr in zip(terminated, truncated)]
-        raw_reward = rewards[i]
 
         for i in range(n_agents):
             # --- custom reward shaping ---
+            raw_reward = rewards[i]
             shaped_reward = raw_reward
             # if any(tuple(next_obs[i]) in ag_states for ag_states in visited_states.values()): # penalize exploring the state already explored by both agents
             #     # next_obs[i].flatten() in visited_states[i]: # penalize exploring the state already explored by the same agent
@@ -193,14 +194,17 @@ for episode in range(num_episodes):
             state = tuple(obs[i])
             if raw_reward == 0:
                 if state in visited_states[i]:
-                    shaped_reward -= 0.05 # light penalty
+                    shaped_reward -= 0.05 # light penalty # small = -0.02
+                    # additional idle state dis-incentive
+                    if actions[i] in (2,3):
+                        shaped_reward -= 0.005
                 else:
                     visited_states[i].add(state)
                     # shaped_reward += 0.05
             
             # penalize for taking invalid actions -- no state change
             if all(obs[i] == next_obs[i]):
-                shaped_reward -= 0.1
+                shaped_reward -= 0.05 
             
             # # punish no-op
             # if actions[i] == 0:
@@ -209,27 +213,46 @@ for episode in range(num_episodes):
             # bonus to successful delivery
             if raw_reward == 1:
                 shaped_reward += 1
+                # NEW: encourage repeat delivery
+                if (obs[i][2] > 0.5) and (next_obs[i][2] < 0.5):  # dropped a shelf
+                    shaped_reward += 0.2
             
             # reward function 3: adds on to reward 2 -- not working very well unfort
+            # time step penalty to disincentivize idle states
+            shaped_reward -= 0.005
+
             # euclidean heuristic to incentivize carrying a shelf to a goal state
-            curr_loc = obs[i][:2]
-            next_loc = next_obs[i][:2]
+            curr_loc = obs[i][0:2]
+            next_loc = next_obs[i][0:2]
+            valid_shelves = np.array([tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.shelfs if shelf in env.unwrapped.request_queue])
             goals = np.array(env.unwrapped.goals)
 
-            if (obs[i][2] > 0.5) and euclidean(curr_loc, goals) > euclidean(next_loc, goals):
-                shaped_reward += 0.05
-
-            # incentivize successful shelf pickup -- idk why this isn't helping
+            if (obs[i][2] < 0.5):
+                delta = euclidean(curr_loc, valid_shelves) - euclidean(next_loc, valid_shelves)
+                if delta > 0:
+                    shaped_reward += 0.05 * delta # small = 0.005
+                # if euclidean(curr_loc, valid_shelves) > euclidean(next_loc, valid_shelves):
+                #     shaped_reward += 0.05
+            
+            elif (obs[i][2] > 0.5):
+                delta = euclidean(curr_loc, goals) - euclidean(next_loc, goals)
+                if delta > 0:
+                    shaped_reward += 0.05 * delta # small = 0.005
+                # if euclidean(curr_loc, goals) > euclidean(next_loc, goals):
+                #     shaped_reward += 0.05
+            
+            # incentivize successful shelf pickup -- unfortunately this seems to incentivize arbitrary shelf toggling
             # if (obs[i][2] < 0.5) and (next_obs[i][2] > 0.5):
             #     shaped_reward += 0.1
             
-
+            
             # --- save and train ---
-            agents[i].store(obs[i], actions[i], rewards[i], next_obs[i], done[i])
+            agents[i].store(obs[i], actions[i], shaped_reward, next_obs[i], done[i])
             loss = agents[i].train_step()
             if loss is not None:
                 episode_losses.append(loss)
             total_reward[i] += rewards[i]
+            total_shaped_reward[i] += shaped_reward
             
         obs = next_obs
         complete_reward = 0
@@ -242,6 +265,8 @@ for episode in range(num_episodes):
     avg_loss = np.mean(episode_losses) if episode_losses else 0.0
     total_reward_sum = sum(total_reward)
     avg_reward_per_agent = total_reward_sum / n_agents
+    total_shaped_reward_sum = sum(total_shaped_reward)
+    avg_shaped_reward_per_agent = total_shaped_reward_sum / n_agents
     
     
     # --- epsilon decay ---
@@ -255,6 +280,7 @@ for episode in range(num_episodes):
     if (episode + 1) % progress_check == 0:
         print(f"Episode {episode+1}, epsilon={epsilon:.3f}, "
               f"total_reward={total_reward_sum}, avg_reward={avg_reward_per_agent:.2f}, "
+              f"total_shaped_reward={total_shaped_reward_sum}, avg_shaped_reward={avg_shaped_reward_per_agent:.2f}, "
               f"avg_loss={avg_loss:.4f}")
     
     episode_stats.append({
@@ -262,7 +288,9 @@ for episode in range(num_episodes):
         "epsilon": epsilon,
         "total_reward": total_reward_sum,
         "avg_reward": avg_reward_per_agent,
-        "avg_loss": avg_loss,
+        "total_shaped_reward": total_shaped_reward_sum,
+        "avg_shaped_reward": avg_shaped_reward_per_agent,
+        "avg_loss": avg_loss
     })
 
 print("\n✅ DQN Training Complete!")
@@ -270,7 +298,7 @@ print("\n✅ DQN Training Complete!")
 torch.save(shared_policy_net.state_dict(), "shared_rewards_dqn_model.pth")
 print("✅ Model saved to 'shared_dqn_rewards_model.pth'")
 
-with open("./reward3_episode_stats.csv", "w", newline="") as f:
+with open("./medium_reward3_episode_stats.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
     writer.writeheader()
     writer.writerows(episode_stats)
@@ -301,7 +329,7 @@ for step in range(max_steps):
         total_reward += r
     rewards_log.append({"step":step + 1, "total reward": total_reward})
 
-    with open("./reward3_eval_stats.csv", "w", newline="") as f:
+    with open("./medium_reward3_eval_stats.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rewards_log[0].keys())
         writer.writeheader()
         writer.writerows(rewards_log)
@@ -326,8 +354,8 @@ for step in range(max_steps):
     obs = next_obs
 
 # --- save GIF ---
-imageio.mimsave("small_rware_dqn_reward3_eval.gif", frames, fps=10)
-print("🎥 Saved small_rware_dqn_reward3_eval.gif")
+imageio.mimsave("medium_rware_dqn_reward3_eval.gif", frames, fps=10)
+print("🎥 Saved medium_rware_dqn_reward3_eval.gif")
 
 input("🏁 Press Enter to exit...")
 env.close()
