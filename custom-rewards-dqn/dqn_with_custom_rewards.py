@@ -17,10 +17,10 @@ n_actions = 5
 alpha = 0.001
 gamma = 0.95
 epsilon = 1.0
-epsilon_decay = 0.9995
+epsilon_decay = 0.9995 # 0.9995
 epsilon_min = 0.05
-num_episodes = 6000 # small = 3000
-max_steps = 350 # small = 175
+num_episodes = 10000 # 5000
+max_steps = 300
 batch_size = 64
 target_update_freq = 10
 replay_capacity = 10000
@@ -45,16 +45,8 @@ x...........
 .x.x.x.x.x.x
 """
 
-large_layout = """
-..x.g....g..x
-.xx.xx..x...x
-.xx.xx......x
-.xx.xx..x...x
-.xx.xx..x...x
-"""
-
 # --- environment ---
-env = gym.make("rware:rware-tiny-2ag-v2", layout=medium_layout)
+env = gym.make("rware:rware-tiny-2ag-v2", layout=small_layout)
 obs, info = env.reset()
 print(info)
 
@@ -143,10 +135,37 @@ class Agent:
         return loss.item()
 
 # --- helper functions ---
-# euclidean heuristic - returns distance to closest target
-def euclidean(pos, targets):
-    distances = np.linalg.norm(targets - pos, axis=1)
-    return np.min(distances)
+# manhattan heuristic - returns distance to closest target
+def manhattan(pos, target):
+    return abs(pos[0] - target[0]) + abs(pos[1] - target[1]) 
+
+# A* pathfinding for reward shaping
+import heapq
+
+def astar(grid_size, start, goal, blocked, heuristic):
+    open_set = [(0 + heuristic(start, goal), 0, start)]
+    visited = set()
+    g_cost = {start: 0}
+
+    while open_set:
+        _, cost, current = heapq.heappop(open_set)
+        if current == goal:
+            return cost
+
+        if current in visited:
+            continue
+        visited.add(current)
+
+        for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+            neighbor = (current[0]+dx, current[1]+dy)
+            if (0 <= neighbor[0] < grid_size[0] and 0 <= neighbor[1] < grid_size[1]
+                and neighbor not in blocked):
+                new_cost = cost + 1
+                if neighbor not in g_cost or new_cost < g_cost[neighbor]:
+                    g_cost[neighbor] = new_cost
+                    priority = new_cost + heuristic(neighbor, goal)
+                    heapq.heappush(open_set, (priority, new_cost, neighbor))
+    return float('inf')
 
 # --- initialize agents ---
 agents = [Agent(i, shared_policy_net, shared_target_net, shared_optimizer, shared_memory) for i in range(n_agents)]
@@ -194,17 +213,17 @@ for episode in range(num_episodes):
             state = tuple(obs[i])
             if raw_reward == 0:
                 if state in visited_states[i]:
-                    shaped_reward -= 0.05 # light penalty # small = -0.02
-                    # additional idle state dis-incentive
+                    shaped_reward -= 0.02 # light penalty # med = -0.01
+                    # NEW: additional idle state dis-incentive to stop unfruitful random rotations (for medium layout)
                     if actions[i] in (2,3):
-                        shaped_reward -= 0.005
+                        shaped_reward -= 0.01
                 else:
                     visited_states[i].add(state)
                     # shaped_reward += 0.05
             
-            # penalize for taking invalid actions -- no state change
+            # penalize for taking invalid actions and no-op-- no state change
             if all(obs[i] == next_obs[i]):
-                shaped_reward -= 0.05 
+                shaped_reward -= 0.1 
             
             # # punish no-op
             # if actions[i] == 0:
@@ -212,7 +231,7 @@ for episode in range(num_episodes):
             
             # bonus to successful delivery
             if raw_reward == 1:
-                shaped_reward += 1
+                shaped_reward += 2
                 # NEW: encourage repeat delivery
                 if (obs[i][2] > 0.5) and (next_obs[i][2] < 0.5):  # dropped a shelf
                     shaped_reward += 0.2
@@ -224,28 +243,28 @@ for episode in range(num_episodes):
             # euclidean heuristic to incentivize carrying a shelf to a goal state
             curr_loc = obs[i][0:2]
             next_loc = next_obs[i][0:2]
-            valid_shelves = np.array([tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.shelfs if shelf in env.unwrapped.request_queue])
-            goals = np.array(env.unwrapped.goals)
+            valid_shelves = [tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.shelfs if shelf in env.unwrapped.request_queue]
+            goals = env.unwrapped.goals
 
             if (obs[i][2] < 0.5):
-                delta = euclidean(curr_loc, valid_shelves) - euclidean(next_loc, valid_shelves)
-                if delta > 0:
-                    shaped_reward += 0.05 * delta # small = 0.005
+                closest = min([manhattan(curr_loc, shelf) - manhattan(next_loc, shelf) for shelf in valid_shelves])
+                if closest > 0:
+                    shaped_reward += 0.005 * closest # medium = 0.02
                 # if euclidean(curr_loc, valid_shelves) > euclidean(next_loc, valid_shelves):
                 #     shaped_reward += 0.05
             
             elif (obs[i][2] > 0.5):
-                delta = euclidean(curr_loc, goals) - euclidean(next_loc, goals)
-                if delta > 0:
-                    shaped_reward += 0.05 * delta # small = 0.005
+                closest =min([manhattan(curr_loc, goal) - manhattan(next_loc, goal) for goal in goals])
+                if closest > 0:
+                    shaped_reward += 0.005 * closest # medium = 0.02
                 # if euclidean(curr_loc, goals) > euclidean(next_loc, goals):
                 #     shaped_reward += 0.05
             
-            # incentivize successful shelf pickup -- unfortunately this seems to incentivize arbitrary shelf toggling
+            # incentivize requested shelf pickup -- unfortunately this seems to incentivize arbitrary shelf toggling
             # if (obs[i][2] < 0.5) and (next_obs[i][2] > 0.5):
             #     shaped_reward += 0.1
             
-            
+            shaped_reward = np.clip(shaped_reward, -2.0, 2.0) #NEW
             # --- save and train ---
             agents[i].store(obs[i], actions[i], shaped_reward, next_obs[i], done[i])
             loss = agents[i].train_step()
@@ -298,7 +317,7 @@ print("\n✅ DQN Training Complete!")
 torch.save(shared_policy_net.state_dict(), "shared_rewards_dqn_model.pth")
 print("✅ Model saved to 'shared_dqn_rewards_model.pth'")
 
-with open("./medium_reward3_episode_stats.csv", "w", newline="") as f:
+with open("./small_reward3_episode_stats.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
     writer.writeheader()
     writer.writerows(episode_stats)
@@ -329,7 +348,7 @@ for step in range(max_steps):
         total_reward += r
     rewards_log.append({"step":step + 1, "total reward": total_reward})
 
-    with open("./medium_reward3_eval_stats.csv", "w", newline="") as f:
+    with open("./small_reward3_eval_stats.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rewards_log[0].keys())
         writer.writeheader()
         writer.writerows(rewards_log)
@@ -354,8 +373,8 @@ for step in range(max_steps):
     obs = next_obs
 
 # --- save GIF ---
-imageio.mimsave("medium_rware_dqn_reward3_eval.gif", frames, fps=10)
-print("🎥 Saved medium_rware_dqn_reward3_eval.gif")
+imageio.mimsave("small_rware_dqn_reward3_eval.gif", frames, fps=10)
+print("🎥 Saved small_rware_dqn_reward3_eval.gif")
 
 input("🏁 Press Enter to exit...")
 env.close()
