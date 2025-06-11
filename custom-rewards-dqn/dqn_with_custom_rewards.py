@@ -15,15 +15,15 @@ import csv
 n_agents = 2
 n_actions = 5
 alpha = 0.001
-gamma = 0.95
+gamma = 0.99
 epsilon = 1.0
-epsilon_decay = 0.9995 # 0.9995
+epsilon_decay = 0.999
 epsilon_min = 0.05
-num_episodes = 10000 # 5000
-max_steps = 300
+num_episodes = 3000
+max_steps = 360
 batch_size = 64
 target_update_freq = 10
-replay_capacity = 10000
+replay_capacity = 400000
 max_reward = 50
 progress_check = 100    # how often we want to print episode progress in training loop
 
@@ -46,7 +46,7 @@ x...........
 """
 
 # --- environment ---
-env = gym.make("rware:rware-tiny-2ag-v2", layout=small_layout)
+env = gym.make("rware:rware-tiny-2ag-v2", layout=medium_layout)
 obs, info = env.reset()
 print(info)
 
@@ -130,6 +130,7 @@ class Agent:
 
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         return loss.item()
@@ -180,6 +181,9 @@ for episode in range(num_episodes):
     total_shaped_reward = [0] * n_agents
     done = [False] * n_agents
     visited_states = [set() for _ in range(n_agents)] # save visited states for each agent to access by index
+    delivered = [True] * n_agents # tracks if a delivery was just made
+
+    valid_shelves = {tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.request_queue}
     
     for i in range(n_agents):
         visited_states[i].add(tuple(obs[i]))
@@ -196,73 +200,58 @@ for episode in range(num_episodes):
             # --- custom reward shaping ---
             raw_reward = rewards[i]
             shaped_reward = raw_reward
-            # if any(tuple(next_obs[i]) in ag_states for ag_states in visited_states.values()): # penalize exploring the state already explored by both agents
-            #     # next_obs[i].flatten() in visited_states[i]: # penalize exploring the state already explored by the same agent
-            #     shaped_reward -= 0.1 
-            # print the q values for all the actions
 
-            # reward function 1:
-            # if all(obs[i] == next_obs[i]): # penalize for taking invalid actions -- no state change
-            #     shaped_reward -= 0.1
-            
-            # if raw_reward == 1:
-            #     shaped_reward += 1
-            
-            # reward function 2:
-            # incentivize explorations & penalize revisiting the same state
-            state = tuple(obs[i])
-            if raw_reward == 0:
-                if state in visited_states[i]:
-                    shaped_reward -= 0.02 # light penalty # med = -0.01
-                    # NEW: additional idle state dis-incentive to stop unfruitful random rotations (for medium layout)
-                    if actions[i] in (2,3):
-                        shaped_reward -= 0.01
-                else:
-                    visited_states[i].add(state)
-                    # shaped_reward += 0.05
-            
-            # penalize for taking invalid actions and no-op-- no state change
-            if all(obs[i] == next_obs[i]):
-                shaped_reward -= 0.1 
-            
-            # # punish no-op
-            # if actions[i] == 0:
-            #     shaped_reward -= 0.05
-            
-            # bonus to successful delivery
-            if raw_reward == 1:
-                shaped_reward += 2
-                # NEW: encourage repeat delivery
-                if (obs[i][2] > 0.5) and (next_obs[i][2] < 0.5):  # dropped a shelf
-                    shaped_reward += 0.2
-            
-            # reward function 3: adds on to reward 2 -- not working very well unfort
             # time step penalty to disincentivize idle states
             shaped_reward -= 0.005
 
-            # euclidean heuristic to incentivize carrying a shelf to a goal state
-            curr_loc = obs[i][0:2]
-            next_loc = next_obs[i][0:2]
-            valid_shelves = [tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.shelfs if shelf in env.unwrapped.request_queue]
-            goals = env.unwrapped.goals
+            # incentivize explorations & penalize revisiting the same state
+            state = tuple(obs[i])
+            if raw_reward == 0:  
+                if state in visited_states[i]:
+                    shaped_reward -= 0.05 # light penalty # small = -0.01
+                    # additional idle state dis-incentive to stop unfruitful rotations
+                    if actions[i] in (2,3):
+                        shaped_reward -= 0.05
+                else:
+                    visited_states[i].add(state)
+            
+            # penalize for taking invalid actions and no-op-- no state change
+            if all(obs[i] == next_obs[i]):
+                shaped_reward -= 0.1
+            
+            # bonus to successful delivery
+            if raw_reward == 1:
+                shaped_reward += 10
+                delivered[i] = True
+                valid_shelves.update(tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.request_queue)
 
-            if (obs[i][2] < 0.5):
+            
+            # euclidean heuristic to incentivize carrying a shelf to a goal state
+            curr_loc = tuple(map(int, obs[i][0:2]))
+            next_loc = tuple(map(int, next_obs[i][0:2]))
+            
+            goals = env.unwrapped.goals
+            carry = (obs[i][2] > 0.5)
+
+            if delivered[i]: # after successful delivery, incentivize finding requested shelves
                 closest = min([manhattan(curr_loc, shelf) - manhattan(next_loc, shelf) for shelf in valid_shelves])
                 if closest > 0:
-                    shaped_reward += 0.005 * closest # medium = 0.02
-                # if euclidean(curr_loc, valid_shelves) > euclidean(next_loc, valid_shelves):
-                #     shaped_reward += 0.05
-            
-            elif (obs[i][2] > 0.5):
-                closest =min([manhattan(curr_loc, goal) - manhattan(next_loc, goal) for goal in goals])
+                    shaped_reward += min(0.2, 0.02 *closest)
+
+                # incentivize repeat delivery by countering time penalty to drop off delivered shelf
+                if not carry:
+                #     if next_obs[i][2] < 0.5:
+                #         shaped_reward += 0.05
+                # else:
+                    # award picking up the shelf
+                    if curr_loc in valid_shelves and next_obs[i][2] > 0.5:
+                        valid_shelves.remove(curr_loc)
+                        delivered[i] = False
+                        shaped_reward += 0.1
+            else: # after shelf picked up, incentivize moving to goal state
+                closest = min([manhattan(curr_loc, goal) - manhattan(next_loc, goal) for goal in goals])
                 if closest > 0:
-                    shaped_reward += 0.005 * closest # medium = 0.02
-                # if euclidean(curr_loc, goals) > euclidean(next_loc, goals):
-                #     shaped_reward += 0.05
-            
-            # incentivize requested shelf pickup -- unfortunately this seems to incentivize arbitrary shelf toggling
-            # if (obs[i][2] < 0.5) and (next_obs[i][2] > 0.5):
-            #     shaped_reward += 0.1
+                    shaped_reward += min(0.2, 0.02 *closest) # small = 0.05
             
             shaped_reward = np.clip(shaped_reward, -2.0, 2.0) #NEW
             # --- save and train ---
@@ -317,7 +306,7 @@ print("\n✅ DQN Training Complete!")
 torch.save(shared_policy_net.state_dict(), "shared_rewards_dqn_model.pth")
 print("✅ Model saved to 'shared_dqn_rewards_model.pth'")
 
-with open("./small_reward3_episode_stats.csv", "w", newline="") as f:
+with open("./med_reward3_episode_stats.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
     writer.writeheader()
     writer.writerows(episode_stats)
@@ -348,7 +337,7 @@ for step in range(max_steps):
         total_reward += r
     rewards_log.append({"step":step + 1, "total reward": total_reward})
 
-    with open("./small_reward3_eval_stats.csv", "w", newline="") as f:
+    with open("./med_reward3_eval_stats.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rewards_log[0].keys())
         writer.writeheader()
         writer.writerows(rewards_log)
@@ -373,8 +362,8 @@ for step in range(max_steps):
     obs = next_obs
 
 # --- save GIF ---
-imageio.mimsave("small_rware_dqn_reward3_eval.gif", frames, fps=10)
-print("🎥 Saved small_rware_dqn_reward3_eval.gif")
+imageio.mimsave("med_rware_dqn_reward3_eval.gif", frames, fps=10)
+print("🎥 Saved med_rware_dqn_reward3_eval.gif")
 
 input("🏁 Press Enter to exit...")
 env.close()
