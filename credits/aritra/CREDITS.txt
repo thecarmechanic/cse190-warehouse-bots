@@ -1,0 +1,1 @@
+ChatGPT (4o) was used to aid in the coding of SEAC implementation and writing of the final report. The final code and the final texts were not directly the outputs of the model, as the outputs required server tweaks. Especially in code, serveral tweaks were required to achieve functional code.
