@@ -181,7 +181,7 @@ for episode in range(num_episodes):
     total_shaped_reward = [0] * n_agents
     done = [False] * n_agents
     visited_states = [set() for _ in range(n_agents)] # save visited states for each agent to access by index
-    delivered = [True] * n_agents # tracks if a delivery was just made
+    delivered = [False] * n_agents # tracks if a delivery was just made
 
     valid_shelves = {tuple((int(shelf.x), int(shelf.y))) for shelf in env.unwrapped.request_queue}
     
